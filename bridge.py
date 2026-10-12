@@ -88,12 +88,38 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self.wfile.write(str(e).encode("utf-8"))
                 return
 
+        elif path == "/ota_update":
+            try:
+                ext_dir = Path(__file__).parent.resolve()
+                res = subprocess.run(["git", "pull", "origin", "main"], cwd=str(ext_dir), capture_output=True, text=True, timeout=30)
+                v_file = ext_dir / "version.json"
+                v_data = {}
+                if v_file.exists():
+                    try:
+                        with open(v_file, "r", encoding="utf-8") as vf:
+                            v_data = json.load(vf)
+                    except Exception:
+                        pass
+                self._send_json({
+                    "success": True,
+                    "version": v_data.get("version", "1.0.1"),
+                    "output": res.stdout.strip(),
+                    "message": "OTA Update applied successfully from GitHub!"
+                })
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e)}, 500)
+            return
+
         self.send_response(404)
         self.end_headers()
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        if path == "/ota_update":
+            self.do_GET()
+            return
 
         if path == "/download":
             content_length = int(self.headers.get("Content-Length", 0))

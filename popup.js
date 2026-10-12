@@ -467,6 +467,88 @@ async function handleLocalAudioFile(file) {
   }
 }
 
+// ─── Version & OTA Updater ───────────────────────────────────────────────────
+const CURRENT_VERSION = '1.0.1';
+const GITHUB_REPO_RAW = 'https://raw.githubusercontent.com/ravibadra9/mureka-audio-splitter/main';
+
+async function checkRemoteOtaVersion() {
+  try {
+    const res = await fetch(`${GITHUB_REPO_RAW}/version.json?t=${Date.now()}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (_) {
+    return null;
+  }
+}
+
+async function triggerOtaUpdate() {
+  const btnLabel = document.getElementById('ota-btn-label');
+  if (btnLabel) btnLabel.textContent = 'Checking…';
+  log('⚡ Checking for GitHub Over-The-Air (OTA) updates…', 'log-cyan');
+
+  try {
+    const remote = await checkRemoteOtaVersion();
+    if (!remote || !remote.version) {
+      log('ℹ Could not fetch remote version from GitHub. Make sure internet is connected.', 'log-orange');
+      if (btnLabel) btnLabel.textContent = 'Update OTA';
+      return;
+    }
+
+    log(`ℹ Current version: v${CURRENT_VERSION} | GitHub version: v${remote.version}`, 'log-cyan');
+
+    // 1. If local companion bridge is running, trigger direct 1-click update
+    let bridgeOk = false;
+    try {
+      const bRes = await fetch('http://127.0.0.1:59955/status');
+      if (bRes.ok) bridgeOk = true;
+    } catch (_) {}
+
+    if (bridgeOk) {
+      log('⚡ Companion bridge active! Applying live GitHub patch to files…', 'log-cyan');
+      if (btnLabel) btnLabel.textContent = 'Updating…';
+
+      const updateRes = await fetch('http://127.0.0.1:59955/ota_update', { method: 'POST' });
+      const updateData = await updateRes.json();
+
+      if (updateData.success) {
+        log(`🎉 OTA UPDATE APPLIED! New version: v${updateData.version}`, 'log-green');
+        log('🔄 Reloading Chrome extension in 1.5 seconds…', 'log-green');
+        if (btnLabel) btnLabel.textContent = '✔ Updated!';
+
+        setTimeout(() => {
+          try { chrome.runtime.reload(); } catch (_) {}
+          window.location.reload();
+        }, 1500);
+        return;
+      } else {
+        throw new Error(updateData.error || 'Failed to apply patch');
+      }
+    }
+
+    // 2. If bridge is offline:
+    if (remote.version !== CURRENT_VERSION) {
+      log(`⚡ NEW UPDATE AVAILABLE: v${remote.version}!`, 'log-green');
+      log(`📝 Changelog: ${remote.changelog || 'Latest features & bug fixes'}`, 'log-cyan');
+      log(`👉 To apply update instantly: Double-click 'update_ota.bat' in your extension folder, OR start 'start_bridge.bat' and click Update OTA!`, 'log-orange');
+      if (btnLabel) {
+        btnLabel.textContent = `⚡ v${remote.version} Avail!`;
+        btnLabel.parentElement.style.borderColor = 'var(--accent-orange)';
+        btnLabel.parentElement.style.color = 'var(--accent-orange)';
+      }
+      alert(`New OTA update (v${remote.version}) is available!\n\nTo apply in 1-click:\n1. Open your extension folder (Desktop\\tools\\extension)\n2. Double-click "update_ota.bat"\n3. Click refresh in chrome://extensions/!`);
+    } else {
+      log('✔ You are already running the latest version from GitHub!', 'log-green');
+      if (btnLabel) {
+        btnLabel.textContent = '✔ Up to Date';
+        setTimeout(() => { btnLabel.textContent = 'Update OTA'; }, 3000);
+      }
+    }
+  } catch (err) {
+    log(`⚠️ OTA check error: ${err.message}`, 'log-red');
+    if (btnLabel) btnLabel.textContent = 'Update OTA';
+  }
+}
+
 // ─── Local Engine Checker & Bug Report Helpers ─────────────────────────────────
 async function checkLocalBridge() {
   try {
@@ -1006,6 +1088,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Check Local Bridge Companion
   checkLocalBridge();
+
+  // Check GitHub OTA Updates in background
+  checkRemoteOtaVersion().then(remote => {
+    if (remote && remote.version && remote.version !== CURRENT_VERSION) {
+      const btnLabel = document.getElementById('ota-btn-label');
+      if (btnLabel) {
+        btnLabel.textContent = `⚡ v${remote.version} Avail!`;
+        btnLabel.parentElement.style.borderColor = 'var(--accent-orange)';
+        btnLabel.parentElement.style.color = 'var(--accent-orange)';
+      }
+      log(`💡 Live OTA Update available on GitHub (v${remote.version})! Click '⚡ Update OTA' to apply.`, 'log-orange');
+    }
+  });
+
+  // OTA update button
+  document.getElementById('btn-ota-update')?.addEventListener('click', triggerOtaUpdate);
 
   // Log action buttons
   document.getElementById('btn-copy-log')?.addEventListener('click', copyLogsOnly);

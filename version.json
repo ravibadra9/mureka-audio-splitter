@@ -1,0 +1,8 @@
+{
+  "version": "1.0.1",
+  "name": "Mureka Audio Splitter",
+  "updated_at": "2026-10-13",
+  "changelog": "Over-The-Air (OTA) updater, YouTube bot-check bypass, one-click bug reporting",
+  "github_repo": "https://github.com/ravibadra9/mureka-audio-splitter",
+  "raw_base": "https://raw.githubusercontent.com/ravibadra9/mureka-audio-splitter/main"
+}
