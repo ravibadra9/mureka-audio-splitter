@@ -152,24 +152,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "quiet": True,
                     "no_warnings": True,
                 }
-                if cookie_file and os.path.isfile(cookie_file):
-                    ydl_opts["cookiefile"] = cookie_file
-                else:
-                    fallback_c = Path.home() / "AppData" / "Local" / "StoriesStudio" / "yt_cookies.txt"
-                    if fallback_c.exists():
-                        ydl_opts["cookiefile"] = str(fallback_c)
+                FFMPEG_DIR = r"C:\ffmpeg\ffmpeg-8.1.2-essentials_build\bin"
+                if os.path.isdir(FFMPEG_DIR):
+                    ydl_opts["ffmpeg_location"] = FFMPEG_DIR
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     title = info.get("title", "Audio")
                     dur = info.get("duration", 0)
 
-                # Locate downloaded file
-                mp3s = sorted(DOWNLOAD_DIR.glob("*.mp3"), key=os.path.getmtime, reverse=True)
-                if not mp3s:
-                    raise RuntimeError("Could not find downloaded MP3 file.")
+                # Locate downloaded audio file (mp3, m4a, mp4, etc.)
+                audio_files = []
+                for ext_pat in ["*.mp3", "*.m4a", "*.mp4", "*.webm", "*.opus", "*.wav"]:
+                    audio_files.extend(DOWNLOAD_DIR.glob(ext_pat))
+                audio_files = [f for f in audio_files if f.stat().st_size > 1024]
+                audio_files.sort(key=os.path.getmtime, reverse=True)
 
-                latest_mp3 = str(mp3s[0])
+                if not audio_files:
+                    raise RuntimeError("Could not find downloaded audio file.")
+
+                latest_audio = str(audio_files[0])
                 m, s = divmod(int(dur), 60)
                 dur_str = f"{m}:{s:02d}"
 
@@ -178,7 +180,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "title": title,
                     "duration": dur,
                     "duration_str": dur_str,
-                    "filepath": latest_mp3
+                    "filepath": latest_audio
                 })
 
             except Exception as e:
@@ -196,14 +198,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data).encode("utf-8"))
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 def run():
     server_address = ("127.0.0.1", PORT)
     httpd = HTTPServer(server_address, BridgeHandler)
     print("=" * 65)
-    print("🎵  MUREKA AUDIO SPLITTER - COMPANION BRIDGE ACTIVE")
-    print(f"🌐  Listening on: http://127.0.0.1:{PORT}")
-    print(f"📂  Downloads Folder: {DOWNLOAD_DIR}")
-    print("⚡  Connected to Chrome Extension for high-speed local processing")
+    print("[MUREKA AUDIO SPLITTER] - COMPANION BRIDGE ACTIVE")
+    print(f">> Listening on: http://127.0.0.1:{PORT}")
+    print(f">> Downloads Folder: {DOWNLOAD_DIR}")
+    print(">> Connected to Chrome Extension for high-speed processing")
     print("=" * 65)
     try:
         httpd.serve_forever()
