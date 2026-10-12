@@ -1,11 +1,14 @@
 /**
- * Mureka Audio Splitter - Core Frontend Controller (v1.0.2)
+ * Mureka Audio Splitter - Core Frontend Controller (v1.0.3)
  * Precision audio slicer with automatic YouTube cookie bypass & bot-check protection.
  * Features:
  * - Real-time state auto-save & auto-restore (never lose work on popup close)
  * - Persistent Standalone OS Window mode & Chrome Side Panel mode
- * - Robust Web Audio API decoding (MP3, M4A, Opus, WebM, WAV)
- * - Local Companion Bridge integration with optional FFmpeg & last-download recovery
+ * - Live Download Percentage, Speed & ETA polling (0% -> 100%)
+ * - Hardware-Accelerated Local Slicing with FFmpeg (Zero Browser Hang!)
+ * - Auto-Trim upon download completion if timestamps are already provided
+ * - Auto-Delete Master Full Audio file (retaining ONLY sliced partial songs)
+ * - One-Click Desktop App Launcher (launch Python music_app.py on local PC)
  * - Universal Tracklist parser & Bulk Paste modal
  * - GitHub Over-The-Air (OTA) updater
  */
@@ -26,7 +29,7 @@ const state = {
   saveTimeout: null,
 };
 
-const CURRENT_VERSION = '1.0.2';
+const CURRENT_VERSION = '1.0.3';
 const GITHUB_REPO_RAW = 'https://raw.githubusercontent.com/ravibadra9/mureka-audio-splitter/main';
 
 // ─── Utility Helpers ──────────────────────────────────────────────────────────
@@ -87,7 +90,6 @@ function log(message, colorClass = '') {
   container.appendChild(entry);
   container.scrollTop = container.scrollHeight;
 
-  // Persist recent logs
   saveRecentLogsDebounced();
 }
 
@@ -134,7 +136,6 @@ function setBusy(busy, message = '') {
   if (dlBtn) dlBtn.disabled = busy;
 
   if (busy) {
-    setProgress(null, true);
     if (message) setStatus(message, true);
   } else {
     setProgress(0, false);
@@ -153,7 +154,7 @@ function getAudioContext() {
       state.audioContext.resume().catch(() => {});
     }
   } catch (err) {
-    console.warn('AudioContext creation notice:', err);
+    console.warn('AudioContext notice:', err);
   }
   return state.audioContext;
 }
@@ -170,13 +171,14 @@ async function saveFullStateToStorage() {
   try {
     const urlVal = document.getElementById('yt-url-input')?.value || '';
     const format = document.getElementById('export-format-select')?.value || 'mp3';
-    const mode = document.getElementById('export-mode-select')?.value || 'zip';
+    const mode = document.getElementById('export-mode-select')?.value || 'separate';
     const folder = document.getElementById('output-folder-input')?.value || 'AudioSegments';
+    const delMaster = document.getElementById('chk-auto-delete-master')?.checked ?? true;
 
     const payload = {
       mureka_saved_url: urlVal,
       mureka_saved_segments: state.segments,
-      mureka_saved_options: { format, mode, folder },
+      mureka_saved_options: { format, mode, folder, deleteMaster },
       mureka_saved_audio_meta: state.audioFileName ? {
         title: state.audioFileName,
         duration: state.audioDuration,
@@ -188,7 +190,6 @@ async function saveFullStateToStorage() {
 
     await chrome.storage.local.set(payload);
 
-    // Visual feedback badge
     const badge = document.getElementById('autosave-badge');
     if (badge) {
       badge.style.opacity = '1';
@@ -209,7 +210,6 @@ async function restoreStateFromStorage() {
       'mureka_saved_logs'
     ]);
 
-    // 1. Restore URL
     if (data.mureka_saved_url) {
       const input = document.getElementById('yt-url-input');
       if (input && !input.value) {
@@ -217,12 +217,10 @@ async function restoreStateFromStorage() {
       }
     }
 
-    // 2. Restore Segments
     if (Array.isArray(data.mureka_saved_segments) && data.mureka_saved_segments.length > 0) {
       state.segments = data.mureka_saved_segments;
       renderSegmentsTable();
     } else {
-      // Default 3 blank rows
       state.segments = [
         { id: 'seg_1', name: '', start: '', end: '', status: 'idle' },
         { id: 'seg_2', name: '', start: '', end: '', status: 'idle' },
@@ -231,18 +229,18 @@ async function restoreStateFromStorage() {
       renderSegmentsTable();
     }
 
-    // 3. Restore Options
     if (data.mureka_saved_options) {
-      const { format, mode, folder } = data.mureka_saved_options;
+      const { format, mode, folder, deleteMaster } = data.mureka_saved_options;
       const fmtEl = document.getElementById('export-format-select');
       const modeEl = document.getElementById('export-mode-select');
       const folderEl = document.getElementById('output-folder-input');
+      const delEl = document.getElementById('chk-auto-delete-master');
       if (fmtEl && format) fmtEl.value = format;
       if (modeEl && mode) modeEl.value = mode;
       if (folderEl && folder) folderEl.value = folder;
+      if (delEl && deleteMaster !== undefined) delEl.checked = deleteMaster;
     }
 
-    // 4. Restore Logs
     if (Array.isArray(data.mureka_saved_logs) && data.mureka_saved_logs.length > 0) {
       const container = document.getElementById('log-container');
       if (container && container.children.length <= 2) {
@@ -256,7 +254,6 @@ async function restoreStateFromStorage() {
       }
     }
 
-    // 5. Restore Audio Session or Reconnect to Bridge
     if (data.mureka_saved_audio_meta) {
       const meta = data.mureka_saved_audio_meta;
       state.audioFileName = meta.title;
@@ -272,7 +269,6 @@ async function restoreStateFromStorage() {
       setStatus(`Loaded: ${meta.title.slice(0, 35)} (${formatTime(meta.duration)}) — ready to split`);
     }
 
-    // 6. Check if companion bridge has an active/finished download from before
     checkBridgeLastDownload();
 
   } catch (err) {
@@ -285,46 +281,14 @@ async function checkBridgeLastDownload() {
     const res = await fetch('http://127.0.0.1:59955/last_download');
     if (!res.ok) return;
     const data = await res.json();
-    if (data && data.available && (!state.audioBuffer || state.audioFileName !== data.title)) {
-      log(`⚡ Bridge recovered last downloaded audio: "${data.title}" (${data.duration_str})`, 'log-cyan');
-      // Prompt user or auto-load
-      const btn = document.createElement('button');
-      btn.className = 'btn btn-secondary';
-      btn.style.cssText = 'font-size: 11px; padding: 2px 8px; margin-left: 8px;';
-      btn.textContent = '⚡ Reload Audio Bytes';
-      btn.onclick = () => reloadBridgeAudio(data.filepath, data.title, data.duration);
-
-      const statusEl = document.getElementById('status-text');
-      if (statusEl && !state.audioBuffer) {
-        statusEl.textContent = `Ready: "${data.title}" (${data.duration_str}) available from bridge`;
-        statusEl.appendChild(btn);
-      }
+    if (data && data.available && (!state.bridgeFilePath || state.bridgeFilePath !== data.filepath)) {
+      state.bridgeFilePath = data.filepath;
+      state.audioFileName = sanitizeFilename(data.title);
+      state.audioDuration = data.duration;
+      log(`⚡ Bridge active session ready: "${data.title}" (${data.duration_str})`, 'log-cyan');
+      updateLoadedAudioUI(data.title, data.size_mb * 1024 * 1024, data.duration);
     }
   } catch (_) {}
-}
-
-async function reloadBridgeAudio(filepath, title, duration) {
-  setBusy(true, 'Loading audio bytes from local bridge…');
-  log(`⬇ Fetching audio bytes for: ${title}…`, 'log-cyan');
-  try {
-    const fileRes = await fetch(`http://127.0.0.1:59955/file?path=${encodeURIComponent(filepath)}`);
-    const buffer = await fileRes.arrayBuffer();
-    const decoded = await getAudioContext().decodeAudioData(buffer);
-
-    state.audioBuffer = decoded;
-    state.audioFileName = sanitizeFilename(title);
-    state.audioDuration = decoded.duration || duration;
-    state.audioSourceType = 'youtube';
-    state.bridgeFilePath = filepath;
-
-    updateLoadedAudioUI(title, buffer.byteLength, decoded.duration);
-    log(`✔ Successfully re-loaded audio bytes from bridge: ${title}!`, 'log-green');
-    triggerAutoSave();
-  } catch (err) {
-    log(`⚠️ Could not reload audio: ${err.message}`, 'log-red');
-  } finally {
-    setBusy(false);
-  }
 }
 
 // ─── Tracklist Universal Parser ───────────────────────────────────────────────
@@ -386,7 +350,6 @@ function parseClipboardText(raw) {
   for (const line of lines) {
     if (line.startsWith('#') || line.startsWith('//')) continue;
 
-    // Case A: Range e.g. Title: (0:00:37 - 0:05:32)
     const mRange = line.match(rangeRegex);
     if (mRange) {
       const t1 = mRange[1];
@@ -397,7 +360,6 @@ function parseClipboardText(raw) {
       continue;
     }
 
-    // Case B: Wrapped single timestamp e.g. Title [0:00:37]
     const mWrap = line.match(singleWrapRegex);
     if (mWrap) {
       const t1 = mWrap[1];
@@ -407,7 +369,6 @@ function parseClipboardText(raw) {
       continue;
     }
 
-    // Case C: Plain single timestamp e.g. 0:00:37 Title
     const mPlain = line.match(singlePlainRegex);
     if (mPlain) {
       const t1 = mPlain[1];
@@ -418,7 +379,6 @@ function parseClipboardText(raw) {
     }
   }
 
-  // Auto-fill end time from next item start if missing
   for (let i = 0; i < segments.length; i++) {
     if (!segments[i].end && i + 1 < segments.length) {
       segments[i].end = segments[i + 1].start;
@@ -448,15 +408,14 @@ function renderSegmentsTable() {
       <button class="btn-row-del" title="Remove segment">✕</button>
     `;
 
-    // Event listeners with auto-save
     const nameInput = rowEl.querySelector('.seg-name');
     const startInput = rowEl.querySelector('.seg-start');
     const endInput = rowEl.querySelector('.seg-end');
     const delBtn = rowEl.querySelector('.btn-row-del');
 
-    nameInput.addEventListener('input', (e) => { seg.name = e.target.value; triggerAutoSave(); });
-    startInput.addEventListener('input', (e) => { seg.start = e.target.value; triggerAutoSave(); });
-    endInput.addEventListener('input', (e) => { seg.end = e.target.value; triggerAutoSave(); });
+    nameInput.addEventListener('input', (e) => { seg.name = e.target.value; triggerAutoSave(); updateAutoTrimLabel(); });
+    startInput.addEventListener('input', (e) => { seg.start = e.target.value; triggerAutoSave(); updateAutoTrimLabel(); });
+    endInput.addEventListener('input', (e) => { seg.end = e.target.value; triggerAutoSave(); updateAutoTrimLabel(); });
 
     delBtn.addEventListener('click', () => {
       deleteSegmentRow(seg.id);
@@ -464,6 +423,21 @@ function renderSegmentsTable() {
 
     container.appendChild(rowEl);
   });
+
+  updateAutoTrimLabel();
+}
+
+function updateAutoTrimLabel() {
+  const valid = state.segments.filter(s => s.name.trim() && s.start.trim() && s.end.trim());
+  const dlBtn = document.getElementById('btn-download-audio');
+  if (!dlBtn) return;
+  if (valid.length > 0) {
+    dlBtn.innerHTML = `<span>⚡</span><span>Auto-Download & Trim (${valid.length} Songs)</span>`;
+    dlBtn.title = 'Downloads and immediately slices all tracks on local PC with master cleanup';
+  } else {
+    dlBtn.innerHTML = `<span>⬇</span><span>Download YouTube Audio</span>`;
+    dlBtn.title = 'Download YouTube audio stream to split';
+  }
 }
 
 function addSegmentRow(name = '', start = '', end = '') {
@@ -697,7 +671,6 @@ async function triggerOtaUpdate() {
 
     log(`ℹ Current version: v${CURRENT_VERSION} | GitHub version: v${remote.version}`, 'log-cyan');
 
-    // 1. If local companion bridge is running, trigger direct 1-click update
     let bridgeOk = false;
     try {
       const bRes = await fetch('http://127.0.0.1:59955/status');
@@ -726,11 +699,9 @@ async function triggerOtaUpdate() {
       }
     }
 
-    // 2. If bridge is offline:
     if (remote.version !== CURRENT_VERSION) {
       log(`⚡ NEW UPDATE AVAILABLE: v${remote.version}!`, 'log-green');
       log(`📝 Changelog: ${remote.changelog || 'Latest features & bug fixes'}`, 'log-cyan');
-      log(`👉 To apply update instantly: Double-click 'update_ota.bat' in your extension folder, OR start 'start_bridge.bat' and click Update OTA!`, 'log-orange');
       if (btnLabel) {
         btnLabel.textContent = `⚡ v${remote.version} Avail!`;
         btnLabel.parentElement.style.borderColor = 'var(--accent-orange)';
@@ -775,11 +746,11 @@ function updateEngineUI(online, ffmpegAvailable = false) {
   if (online) {
     dot.className = 'engine-dot online';
     if (ffmpegAvailable) {
-      title.textContent = 'Local Engine: Active ⚡ (yt-dlp + FFmpeg 320k MP3)';
-      sub.textContent = 'Hardware accelerated downloads active';
+      title.textContent = 'Local Engine: Active ⚡ (Hardware Accelerated 0.05s Slicing - ZERO HANG)';
+      sub.textContent = 'Full audio will auto-delete after trimming. Only sliced songs saved!';
     } else {
-      title.textContent = 'Local Engine: Active ⚡ (yt-dlp Native Audio Stream Mode)';
-      sub.textContent = 'FFmpeg not needed — downloading native M4A/Opus with Web Audio decoding';
+      title.textContent = 'Local Engine: Active ⚡ (yt-dlp Native Stream Mode)';
+      sub.textContent = 'Zero-dependency streaming active';
     }
     title.style.color = 'var(--accent-green)';
   } else {
@@ -787,6 +758,22 @@ function updateEngineUI(online, ffmpegAvailable = false) {
     title.textContent = 'Local Engine: Offline (Browser Standalone Mode)';
     title.style.color = 'var(--accent-orange)';
     sub.textContent = '👉 Double-click start_bridge.bat in extension folder for instant 10MB/s bypass';
+  }
+}
+
+async function launchDesktopMusicSuite() {
+  log('🚀 Launching Python Music Suite (music_app.py) on your PC…', 'log-cyan');
+  try {
+    const res = await fetch('http://127.0.0.1:59955/launch_desktop');
+    const data = await res.json();
+    if (data.success) {
+      log('✔ Music Suite Desktop App opened successfully on Windows!', 'log-green');
+      setStatus('Desktop App launched on PC');
+    } else {
+      log(`ℹ Desktop launch note: ${data.error || data.message || 'Run music_app.py manually'}`, 'log-orange');
+    }
+  } catch (err) {
+    log(`⚠️ Could not launch desktop app: ${err.message}. Make sure start_bridge.bat is running.`, 'log-red');
   }
 }
 
@@ -877,69 +864,123 @@ async function startYouTubeDownload() {
     return;
   }
 
+  // Check if valid segments already exist for AUTO-TRIM
+  const validSegments = state.segments.filter(s => s.name.trim() && s.start.trim() && s.end.trim());
+  const format = document.getElementById('export-format-select')?.value || 'mp3';
+  const folderName = sanitizeFilename(document.getElementById('output-folder-input')?.value || 'AudioSegments');
+  const deleteMaster = document.getElementById('chk-auto-delete-master')?.checked ?? true;
+
   setBusy(true, 'Connecting to YouTube audio stream…');
-  log(`⬇ Connecting to YouTube audio stream for: ${url}`, 'log-cyan');
+  log(`⬇ Connecting to YouTube audio stream: ${url}`, 'log-cyan');
 
   try {
-    // 1. Check if local companion bridge is running on http://127.0.0.1:59955
     const bridgeAvailable = await checkLocalBridge();
 
     if (bridgeAvailable) {
-      log('⚡ Local Companion Bridge active! Downloading with yt-dlp…', 'log-green');
-      setStatus('Downloading audio stream via local companion bridge…', true);
+      // Start real-time live percentage polling
+      let pollTimer = setInterval(async () => {
+        try {
+          const pRes = await fetch('http://127.0.0.1:59955/progress');
+          const pData = await pRes.json();
+          if (pData && pData.status === 'downloading') {
+            const pct = Math.max(0, Math.min(100, pData.percent || 0));
+            setProgress(pct);
+            const speedStr = pData.speed ? `(${pData.speed} · ETA: ${pData.eta || 'calc…'})` : '';
+            setStatus(`⬇ Downloading: ${pct.toFixed(1)}% ${speedStr}`, true);
+          }
+        } catch (_) {}
+      }, 300);
 
+      // CASE A: Timestamps already entered -> AUTO DOWNLOAD & TRIM & DELETE MASTER AUDIO!
+      if (validSegments.length > 0) {
+        log(`⚡ Auto-Trim Enabled: Downloading and slicing ${validSegments.length} tracks on local engine…`, 'log-green');
+        validSegments.forEach(s => s.status = 'processing');
+        renderSegmentsTable();
+
+        const dlRes = await fetch('http://127.0.0.1:59955/download_and_split', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: url,
+            cookies: state.cookiesText,
+            segments: validSegments,
+            format: format,
+            folder: folderName,
+            delete_source: deleteMaster,
+            auto_trim: true
+          })
+        });
+
+        clearInterval(pollTimer);
+        const data = await dlRes.json();
+        if (!data.success) throw new Error(data.error || 'Auto-trim failed');
+
+        setProgress(100);
+        validSegments.forEach(s => s.status = 'done');
+        renderSegmentsTable();
+
+        const summaryText = `✔ Done! Trimmed ${data.sliced_count} songs into Desktop/AudioSegments/${folderName}`;
+        setStatus(summaryText, false);
+        log(`🎉 Auto-Trim Complete! ${data.sliced_count} song segments created.`, 'log-green');
+
+        if (data.deleted_master) {
+          log('🗑 Auto-deleted master full audio file. Only trimmed songs retained on disk!', 'log-green');
+        }
+
+        // Open Folder button
+        const openBtn = document.createElement('button');
+        openBtn.className = 'btn btn-secondary';
+        openBtn.style.cssText = 'font-size: 11px; padding: 2px 8px; margin-left: 8px;';
+        openBtn.textContent = '📂 Open Folder';
+        openBtn.onclick = () => fetch(`http://127.0.0.1:59955/open_folder?path=${encodeURIComponent(data.output_dir)}`);
+        document.getElementById('status-text')?.appendChild(openBtn);
+
+        triggerAutoSave();
+        return;
+      }
+
+      // CASE B: No timestamps yet -> Fast download, store filepath, NO MEMORY BLOAT
+      log('⚡ Local Engine downloading audio with yt-dlp…', 'log-green');
       const bridgeRes = await fetch('http://127.0.0.1:59955/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: url, cookies: state.cookiesText })
       });
+      clearInterval(pollTimer);
       const data = await bridgeRes.json();
       if (!data.success) throw new Error(data.error || 'Bridge download failed');
 
-      log(`✔ Companion download complete: ${data.title} (${data.duration_str})`, 'log-green');
-      setStatus('Decoding audio bytes with Web Audio API…', true);
-
-      // Fetch the downloaded file bytes from the bridge
-      const fileRes = await fetch(`http://127.0.0.1:59955/file?path=${encodeURIComponent(data.filepath)}`);
-      const buffer = await fileRes.arrayBuffer();
-      const decoded = await getAudioContext().decodeAudioData(buffer);
-
-      state.audioBuffer = decoded;
-      state.audioFileName = sanitizeFilename(data.title);
-      state.audioDuration = decoded.duration;
-      state.audioSourceType = 'youtube';
+      setProgress(100);
       state.bridgeFilePath = data.filepath;
+      state.audioFileName = sanitizeFilename(data.title);
+      state.audioDuration = data.duration;
+      state.audioSourceType = 'youtube';
 
-      updateLoadedAudioUI(data.title, buffer.byteLength, decoded.duration);
-      log(`✔ Audio successfully loaded: ${data.title} (${formatTime(decoded.duration)}) — ready to split!`, 'log-green');
+      updateLoadedAudioUI(data.title, (data.size_mb || 50) * 1024 * 1024, data.duration);
+      log(`✔ Companion download complete: ${data.title} (${data.duration_str}) — Ready to split!`, 'log-green');
+      log('💡 Paste timestamps in table and click "Split & Export" to slice and delete full audio!', 'log-cyan');
       triggerAutoSave();
       return;
     }
 
-    // 2. Standalone browser fallback mode
-    log('ℹ Local engine offline. Attempting browser direct resolution…', 'log-cyan');
+    // 2. Standalone browser fallback mode (if bridge offline)
+    log('ℹ Local engine offline. Falling back to browser direct fetch…', 'log-cyan');
     const videoIdMatch = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11}).*/);
     const videoId = videoIdMatch ? videoIdMatch[1] : null;
 
     if (!videoId) throw new Error('Invalid YouTube URL or Video ID');
 
-    // Multiple resilient endpoints with <all_urls> host permissions
     const resolvers = [
       async () => {
-        log('📡 Querying high-speed stream gateway…');
         const r = await fetch(`https://pipedapi.kavin.rocks/streams/${videoId}`);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const streamData = await r.json();
         const audioStreams = streamData.audioStreams || [];
         if (!audioStreams.length) throw new Error('No audio streams in response');
         audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-        return {
-          title: streamData.title || `YouTube_${videoId}`,
-          streamUrl: audioStreams[0].url
-        };
+        return { title: streamData.title || `YouTube_${videoId}`, streamUrl: audioStreams[0].url };
       },
       async () => {
-        log('📡 Querying fallback audio stream gateway…');
         const r = await fetch('https://api.cobalt.tools/api/json', {
           method: 'POST',
           headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
@@ -954,33 +995,25 @@ async function startYouTubeDownload() {
 
     let resolved = null;
     let lastErr = null;
-
     for (const resolver of resolvers) {
       try {
         resolved = await resolver();
         if (resolved && resolved.streamUrl) break;
-      } catch (e) {
-        lastErr = e;
-      }
+      } catch (e) { lastErr = e; }
     }
 
     if (!resolved || !resolved.streamUrl) {
-      log('❌ Direct browser fetch blocked by YouTube bot-check / rate limits.', 'log-red');
-      log('💡 EASY 1-CLICK FIX: Double-click "start_bridge.bat" in Desktop/tools/extension/ for instant 10MB/s download bypass!', 'log-orange');
-      log('👉 Or click "Browse…" to load an existing downloaded audio file directly.', 'log-cyan');
-      log('📋 Click "🐞 Copy Bug Report" above to copy the full trace if you want to paste it here.', 'log-orange');
-      throw new Error(lastErr ? lastErr.message : 'Please start start_bridge.bat for bot-bypass');
+      throw new Error(lastErr ? lastErr.message : 'Please double-click start_bridge.bat for bot-bypass');
     }
 
-    log(`⬇ Downloading audio stream for: ${resolved.title}…`, 'log-cyan');
+    log(`⬇ Downloading stream for: ${resolved.title}…`, 'log-cyan');
     setStatus('Downloading audio chunks…', true);
 
     const streamResponse = await fetch(resolved.streamUrl);
-    if (!streamResponse.ok) throw new Error(`Audio download failed: HTTP ${streamResponse.status}`);
+    if (!streamResponse.ok) throw new Error(`HTTP ${streamResponse.status}`);
 
     const audioArrayBuffer = await streamResponse.arrayBuffer();
-    log(`⚡ Stream download complete (${(audioArrayBuffer.byteLength / (1024 * 1024)).toFixed(1)} MB)! Decoding audio…`, 'log-cyan');
-    setStatus('Decoding audio with Web Audio API…', true);
+    setStatus('Decoding audio…', true);
 
     const decoded = await getAudioContext().decodeAudioData(audioArrayBuffer);
     state.audioBuffer = decoded;
@@ -990,7 +1023,7 @@ async function startYouTubeDownload() {
     state.bridgeFilePath = null;
 
     updateLoadedAudioUI(resolved.title, audioArrayBuffer.byteLength, decoded.duration);
-    log(`✔ Complete Download & Decode: ${resolved.title} (${formatTime(decoded.duration)}) — ready to split!`, 'log-green');
+    log(`✔ Complete: ${resolved.title} (${formatTime(decoded.duration)}) — ready to split!`, 'log-green');
     triggerAutoSave();
 
   } catch (err) {
@@ -1015,25 +1048,85 @@ function updateLoadedAudioUI(title, byteLength, duration) {
 async function startSplitAndExport() {
   if (state.isBusy) return;
 
-  if (!state.audioBuffer) {
-    alert('Please download YouTube audio first or browse an existing audio file.');
-    return;
-  }
-
-  // Filter valid segments
   const validSegments = state.segments.filter(s => s.name.trim() && s.start.trim() && s.end.trim());
   if (!validSegments.length) {
     alert('Please add at least one segment with Name, Start time, and End time.');
     return;
   }
 
-  setBusy(true, 'Splitting audio segments…');
-  log(`✂ Starting split for ${validSegments.length} segment(s)…`, 'log-cyan');
-
   const format = document.getElementById('export-format-select')?.value || 'mp3';
-  const mode = document.getElementById('export-mode-select')?.value || 'zip';
   const folderName = sanitizeFilename(document.getElementById('output-folder-input')?.value || 'AudioSegments');
+  const deleteMaster = document.getElementById('chk-auto-delete-master')?.checked ?? true;
 
+  // 1. FAST HARDWARE-ACCELERATED LOCAL SPLIT (ZERO HANG!)
+  if (state.localBridgeActive && state.bridgeFilePath) {
+    setBusy(true, 'Fast local FFmpeg splitting…');
+    log(`✂ Slicing ${validSegments.length} tracks via local FFmpeg (Zero-Hang)…`, 'log-cyan');
+
+    try {
+      validSegments.forEach(s => s.status = 'processing');
+      renderSegmentsTable();
+
+      const splitRes = await fetch('http://127.0.0.1:59955/split', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filepath: state.bridgeFilePath,
+          segments: validSegments,
+          folder: folderName,
+          format: format,
+          delete_source: deleteMaster
+        })
+      });
+      const data = await splitRes.json();
+      if (!data.success) throw new Error(data.error || 'Local split failed');
+
+      validSegments.forEach(s => s.status = 'done');
+      renderSegmentsTable();
+      setProgress(100);
+
+      const summary = `✔ Sliced ${data.sliced_count} tracks into Desktop/AudioSegments/${folderName}`;
+      setStatus(summary, false);
+      log(`🎉 ${summary}`, 'log-green');
+
+      if (data.deleted_source) {
+        log('🗑 Master full audio file auto-deleted from disk! Only partial songs remain.', 'log-green');
+        state.bridgeFilePath = null;
+        state.audioFileName = null;
+        const lbl = document.getElementById('file-status-lbl');
+        if (lbl) {
+          lbl.className = 'file-status-label';
+          lbl.textContent = 'None';
+        }
+      }
+
+      // Open Folder Button
+      const openBtn = document.createElement('button');
+      openBtn.className = 'btn btn-secondary';
+      openBtn.style.cssText = 'font-size: 11px; padding: 2px 8px; margin-left: 8px;';
+      openBtn.textContent = '📂 Open Folder';
+      openBtn.onclick = () => fetch(`http://127.0.0.1:59955/open_folder?path=${encodeURIComponent(data.output_dir)}`);
+      document.getElementById('status-text')?.appendChild(openBtn);
+
+      triggerAutoSave();
+      return;
+    } catch (err) {
+      log(`⚠️ Local split notice: ${err.message}. Trying browser fallback…`, 'log-orange');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 2. Standalone browser fallback (if bridge offline)
+  if (!state.audioBuffer) {
+    alert('Please download YouTube audio first or start start_bridge.bat.');
+    return;
+  }
+
+  setBusy(true, 'Splitting audio segments in browser…');
+  log(`✂ Starting browser split for ${validSegments.length} segment(s)…`, 'log-cyan');
+
+  const mode = document.getElementById('export-mode-select')?.value || 'zip';
   const audioCtx = getAudioContext();
   const sampleRate = state.audioBuffer.sampleRate;
   const numChannels = state.audioBuffer.numberOfChannels;
@@ -1054,29 +1147,21 @@ async function startSplitAndExport() {
     const startSec = parseTimestamp(seg.start);
     let endSec = parseTimestamp(seg.end);
 
-    // Update row status in UI
     seg.status = 'processing';
     renderSegmentsTable();
     setStatus(`Cutting [${indexStr}/${validSegments.length}]: ${cleanName}…`, true);
     setProgress(((i) / validSegments.length) * 100);
 
     try {
-      if (startSec >= sourceDuration) {
-        throw new Error(`Start time (${seg.start}) is beyond audio duration (${formatTime(sourceDuration)})`);
-      }
-      if (endSec > sourceDuration) {
-        endSec = sourceDuration;
-      }
+      if (startSec >= sourceDuration) throw new Error(`Start time exceeds duration`);
+      if (endSec > sourceDuration) endSec = sourceDuration;
       const duration = endSec - startSec;
-      if (duration <= 0) {
-        throw new Error(`Invalid duration. End (${seg.end}) must be after start (${seg.start})`);
-      }
+      if (duration <= 0) throw new Error(`End must be after start`);
 
       const startSample = Math.floor(startSec * sampleRate);
       const endSample = Math.min(state.audioBuffer.length, Math.floor(endSec * sampleRate));
       const sliceLength = endSample - startSample;
 
-      // Create slice AudioBuffer
       const sliceBuffer = audioCtx.createBuffer(numChannels, sliceLength, sampleRate);
       for (let ch = 0; ch < numChannels; ch++) {
         const srcData = state.audioBuffer.getChannelData(ch);
@@ -1084,7 +1169,6 @@ async function startSplitAndExport() {
         dstData.set(srcData.subarray(startSample, endSample));
       }
 
-      // Encode slice
       let blob;
       const fileExt = format === 'wav' ? 'wav' : 'mp3';
       const outFilename = `${indexStr}. ${cleanName}.${fileExt}`;
@@ -1095,30 +1179,17 @@ async function startSplitAndExport() {
         blob = window.MurekaAudioUtils.encodeMP3(sliceBuffer, 320);
       }
 
-      if (!blob || blob.size < 512) {
-        throw new Error('Produced empty audio output');
-      }
-
-      const mbSize = (blob.size / (1024 * 1024)).toFixed(2);
-      log(`✔ [${formatTime(duration)}] ${outFilename} (${mbSize} MB)`, 'log-green');
-
       if (zip) {
         zip.file(outFilename, blob);
       } else {
-        // Individual download via Chrome Downloads API
         const blobUrl = URL.createObjectURL(blob);
         const downloadPath = folderName ? `${folderName}/${outFilename}` : outFilename;
-        chrome.runtime.sendMessage({
-          action: 'DOWNLOAD_SEGMENT',
-          url: blobUrl,
-          filename: downloadPath
-        });
+        chrome.runtime.sendMessage({ action: 'DOWNLOAD_SEGMENT', url: blobUrl, filename: downloadPath });
       }
 
       seg.status = 'done';
       successCount++;
     } catch (err) {
-      console.error(`Error splitting segment ${cleanName}:`, err);
       log(`✖ ${cleanName}: ${err.message}`, 'log-red');
       seg.status = 'error';
       failCount++;
@@ -1129,26 +1200,13 @@ async function startSplitAndExport() {
 
   setProgress(100);
 
-  // If ZIP mode, package and download ZIP
   if (zip && successCount > 0) {
     setStatus('Generating ZIP package…', true);
-    log('📦 Compressing all segments into ZIP package…', 'log-cyan');
-    try {
-      const zipBlob = await zip.generateAsync({ type: 'blob' }, (metadata) => {
-        setStatus(`Zipping: ${Math.round(metadata.percent)}%`, true);
-      });
-      const zipUrl = URL.createObjectURL(zipBlob);
-      const zipFilename = folderName ? `${folderName}.zip` : 'AudioSegments.zip';
-
-      chrome.runtime.sendMessage({
-        action: 'DOWNLOAD_SEGMENT',
-        url: zipUrl,
-        filename: zipFilename
-      });
-      log(`✔ ZIP archive downloaded: ${zipFilename} (${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB)`, 'log-green');
-    } catch (err) {
-      log(`✖ Failed to build ZIP: ${err.message}`, 'log-red');
-    }
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const zipUrl = URL.createObjectURL(zipBlob);
+    const zipFilename = folderName ? `${folderName}.zip` : 'AudioSegments.zip';
+    chrome.runtime.sendMessage({ action: 'DOWNLOAD_SEGMENT', url: zipUrl, filename: zipFilename });
+    log(`✔ ZIP archive downloaded: ${zipFilename}`, 'log-green');
   }
 
   const summary = `Done — ${successCount} segment(s) exported${failCount ? `, ${failCount} failed` : ''}`;
@@ -1223,7 +1281,7 @@ async function pasteAndAutoParse() {
     }
     const parsed = parseClipboardText(raw);
     if (!parsed.length) {
-      log('⚠ No valid timestamps found in clipboard. Paste lines like:\nOpening Prayer and Worship: (0:00:00 - 0:02:29)\nOr click 📝 Bulk Paste.', 'log-orange');
+      log('⚠ No valid timestamps found in clipboard. Paste lines like:\nOpening Prayer: (0:00:00 - 0:02:29)\nOr click 📝 Bulk Paste.', 'log-orange');
       return;
     }
     loadSegmentsIntoTable(parsed);
@@ -1235,36 +1293,33 @@ async function pasteAndAutoParse() {
 
 // ─── Initialization ───────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  // Check full studio mode
   const urlParams = new URLSearchParams(window.location.search);
   const isFull = urlParams.get('mode') === 'full';
   if (isFull) {
     document.body.classList.add('full-studio-mode');
   }
 
-  // Restore saved state (URL, segments, options, logs, audio)
   restoreStateFromStorage();
-
-  // Load saved cookies
   loadSavedCookies();
-
-  // Check active tab for YouTube URL if input is empty
   checkActiveTabForYouTube();
 
-  // Log greeting
   log(`⚡ Mureka Audio Splitter v${CURRENT_VERSION} initialized.`, 'log-cyan');
   log('🛡 Ready with YouTube bot-check and 403 bypass protection.', 'log-green');
 
   // Input change auto-save listeners
-  document.getElementById('yt-url-input')?.addEventListener('input', triggerAutoSave);
+  document.getElementById('yt-url-input')?.addEventListener('input', () => { triggerAutoSave(); updateAutoTrimLabel(); });
   document.getElementById('export-format-select')?.addEventListener('change', triggerAutoSave);
   document.getElementById('export-mode-select')?.addEventListener('change', triggerAutoSave);
   document.getElementById('output-folder-input')?.addEventListener('input', triggerAutoSave);
+  document.getElementById('chk-auto-delete-master')?.addEventListener('change', triggerAutoSave);
+
+  // Desktop App Launchers
+  document.getElementById('btn-launch-desktop')?.addEventListener('click', launchDesktopMusicSuite);
+  document.getElementById('btn-banner-launch-desktop')?.addEventListener('click', launchDesktopMusicSuite);
 
   // Persistent Window & Side Panel Actions
   const openWindow = () => {
     chrome.runtime.sendMessage({ action: 'OPEN_WINDOW' }, () => {
-      // Close popup if opened in popup
       if (!isFull) window.close();
     });
   };

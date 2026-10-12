@@ -19,6 +19,10 @@
     <div class="header-tabs">
       <div class="tab-badge" id="tab-video-maker">🎬 Video Maker</div>
       <div class="tab-badge active" id="tab-audio-splitter">✂ Audio Splitter</div>
+      <button class="btn-icon-link" id="btn-launch-desktop" style="color: #f43f5e; border-color: rgba(244, 63, 94, 0.4);" title="Launch Python Desktop Music Suite (music_app.py) on PC">
+        <span>🚀</span>
+        <span>PC App</span>
+      </button>
       <button class="btn-icon-link" id="btn-ota-update" style="color: #10b981; border-color: rgba(16, 185, 129, 0.4);" title="Check and apply live GitHub OTA updates">
         <span>⚡</span>
         <span id="ota-btn-label">Update OTA</span>
@@ -42,9 +46,12 @@
   <div class="popup-persistent-banner" id="popup-persistent-banner">
     <div class="banner-text">
       <span class="banner-icon">💡</span>
-      <span><b>Background Tip:</b> Clicking outside closes this popup. Open <b>⛶ Window</b> or <b>📌 Side Panel</b> to keep running uninterrupted in background!</span>
+      <span><b>Zero-Hang Mode:</b> Open <b>⛶ Window</b> or <b>🚀 Local PC App</b> to eliminate browser freezing!</span>
     </div>
-    <button class="btn-banner-action" id="btn-banner-open-window">⛶ Open Window</button>
+    <div style="display: flex; gap: 6px;">
+      <button class="btn-banner-action" id="btn-banner-open-window">⛶ Window</button>
+      <button class="btn-banner-action" id="btn-banner-launch-desktop" style="background: linear-gradient(135deg, #f43f5e, #be123c);" title="Launch Python music_app.py on PC">🚀 PC App</button>
+    </div>
   </div>
 
   <!-- Main Scroll Container -->
@@ -163,9 +170,15 @@
           <option value="wav">WAV (Lossless 16-bit PCM)</option>
         </select>
         <select class="select-input" id="export-mode-select">
-          <option value="zip" selected>📦 ZIP Archive (All in 1)</option>
-          <option value="separate">📂 Separate Audio Files</option>
+          <option value="separate" selected>📂 Separate Audio Files (Instant Local Slicing)</option>
+          <option value="zip">📦 ZIP Archive (All in 1)</option>
         </select>
+      </div>
+      <div class="checkbox-row" style="margin-top: 10px; display: flex; align-items: center; gap: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-dim); cursor: pointer;">
+          <input type="checkbox" id="chk-auto-delete-master" checked style="accent-color: var(--accent-cyan); width: 14px; height: 14px; cursor: pointer;">
+          <span>🗑 Auto-delete master full audio after trimming (keep ONLY sliced partial songs)</span>
+        </label>
       </div>
     </section>
 

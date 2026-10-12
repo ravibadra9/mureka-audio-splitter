@@ -1,8 +1,8 @@
 {
-  "version": "1.0.2",
+  "version": "1.0.3",
   "name": "Mureka Audio Splitter",
   "updated_at": "2026-10-13",
-  "changelog": "Persistent Standalone OS Window & Side Panel modes, real-time auto-save & restore, optional FFmpeg with native stream fallback, last-download session recovery",
+  "changelog": "Hardware-accelerated Zero-Hang Slicing, Live Download Percentage & Speed, Auto-Trim on completion, Auto-delete full master audio, and Desktop PC App launcher",
   "github_repo": "https://github.com/ravibadra9/mureka-audio-splitter",
   "raw_base": "https://raw.githubusercontent.com/ravibadra9/mureka-audio-splitter/main"
 }
