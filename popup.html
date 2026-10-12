@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mureka Audio Splitter</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- App Header -->
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="brand-title">
+        <span class="logo-icon">🎵</span>
+        <span>Mureka Audio Splitter</span>
+      </div>
+      <div class="brand-subtitle">Download · Split · Export</div>
+    </div>
+    <div class="header-tabs">
+      <div class="tab-badge" id="tab-video-maker">🎬 Video Maker</div>
+      <div class="tab-badge active" id="tab-audio-splitter">✂ Audio Splitter</div>
+      <button class="btn-icon-link" id="btn-open-tab" title="Open Fullscreen Studio in Browser Tab">
+        <span>⛶</span>
+        <span>Studio Tab</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Scroll Container -->
+  <main class="main-container">
+
+    <!-- Engine Mode Bar -->
+    <div class="engine-bar" id="engine-bar">
+      <div class="engine-info">
+        <span class="engine-dot" id="engine-dot">●</span>
+        <span class="engine-title" id="engine-title">Local Engine: Checking…</span>
+      </div>
+      <div class="engine-sub" id="engine-sub">Double-click 'start_bridge.bat' in extension folder for instant 10MB/s bypass</div>
+    </div>
+
+    <!-- Card 1: YouTube URL -->
+    <section class="card">
+      <div class="card-header">
+        <div class="card-title">YouTube URL</div>
+        <button class="btn btn-secondary" id="btn-detect-tab" style="font-size: 11px; padding: 4px 10px;">
+          <span>📌</span>
+          <span>Use Current Tab Video</span>
+        </button>
+      </div>
+      <div class="input-row">
+        <input
+          type="text"
+          id="yt-url-input"
+          class="text-input"
+          placeholder="https://www.youtube.com/watch?v=..."
+        />
+        <button class="btn btn-primary btn-download" id="btn-download-audio">
+          <span>⬇</span>
+          <span>Download Audio</span>
+        </button>
+      </div>
+
+      <div class="sub-row">
+        <span>— or use existing audio file —</span>
+        <button class="btn btn-secondary" id="btn-browse-file" style="padding: 4px 12px; font-size: 11px;">
+          Browse…
+        </button>
+        <input type="file" id="local-file-input" accept="audio/*,.mp3,.wav,.m4a,.opus,.ogg,.flac,.aac,.webm" style="display: none;" />
+        <span class="file-status-label" id="file-status-lbl">No file selected</span>
+      </div>
+    </section>
+
+    <!-- Card 2: YouTube Token / Cookie / Netscape (Bypass 403 & Bot Check) -->
+    <section class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <span>🔑</span>
+          <span>YouTube Token / Cookie / Netscape (Bypass 403 & Bot Check)</span>
+        </div>
+        <div class="status-badge inactive" id="cookie-status-badge">
+          <span>●</span>
+          <span id="cookie-status-text">Not Configured</span>
+        </div>
+      </div>
+      <div class="card-subtitle">
+        Extract full-length audio without YouTube connection drops, bot checks, or truncation (like Suno Downloader).
+      </div>
+      <div class="input-row">
+        <input
+          type="text"
+          id="token-input"
+          class="text-input"
+          placeholder="Paste YouTube Cookie / Token (LOGIN_INFO, __Secure-3PSID, Netscape cookie text, or browser name)..."
+        />
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-upload-cookies">
+          <span>📤</span>
+          <span>Upload Cookies (.txt / JSON)</span>
+        </button>
+        <input type="file" id="cookie-file-input" accept=".txt,.json,.cookies,.cookie,.dat" style="display: none;" />
+
+        <button class="btn btn-slate" id="btn-save-token">
+          <span>💾</span>
+          <span>Save</span>
+        </button>
+
+        <button class="btn btn-teal" id="btn-verify-token">
+          <span>⚡</span>
+          <span>Verify</span>
+        </button>
+
+        <button class="btn btn-purple" id="btn-auto-cookies" title="Auto fetch cookies directly from active Chrome YouTube session">
+          <span>🌐</span>
+          <span>Auto Chrome/Edge</span>
+        </button>
+
+        <button class="btn btn-danger" id="btn-clear-token" style="margin-left: auto;">
+          <span>✕</span>
+          <span>Clear</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Card 3: Output Folder & Export Settings -->
+    <section class="card">
+      <div class="card-header">
+        <div class="card-title">Output Folder & Export Settings</div>
+      </div>
+      <div class="settings-grid">
+        <div class="input-row">
+          <input
+            type="text"
+            id="output-folder-input"
+            class="text-input"
+            value="AudioSegments"
+            placeholder="Subfolder in Downloads (e.g. AudioSegments)"
+          />
+        </div>
+        <select class="select-input" id="export-format-select">
+          <option value="mp3" selected>MP3 (320kbps High Quality)</option>
+          <option value="wav">WAV (Lossless 16-bit PCM)</option>
+        </select>
+        <select class="select-input" id="export-mode-select">
+          <option value="zip" selected>📦 ZIP Archive (All in 1)</option>
+          <option value="separate">📂 Separate Audio Files</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- Card 4: Segments -->
+    <section class="card">
+      <div class="segments-header-bar">
+        <div class="card-title">Segments</div>
+        <div class="segments-actions">
+          <button class="btn btn-green-dark" id="btn-add-row">
+            <span>＋</span>
+            <span>Add Row</span>
+          </button>
+          <button class="btn btn-green-solid" id="btn-paste-parse">
+            <span>📋</span>
+            <span>Paste & Auto-Parse</span>
+          </button>
+          <button class="btn btn-slate" id="btn-bulk-paste">
+            <span>📝</span>
+            <span>Bulk Paste</span>
+          </button>
+          <button class="btn btn-prompt" id="btn-format-prompt" title="Copy prompt to format tracklist with AI">
+            <span>📋</span>
+            <span id="format-prompt-text">Format Prompt</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Column headers -->
+      <div class="table-col-header">
+        <div>#</div>
+        <div>Song / Segment Name</div>
+        <div>Start</div>
+        <div></div>
+        <div>End</div>
+        <div></div>
+      </div>
+
+      <!-- Segment Rows Container -->
+      <div class="table-rows-container" id="segment-rows-container">
+        <!-- Rows dynamically injected here -->
+      </div>
+    </section>
+
+    <!-- Card 5: Log & Diagnostics -->
+    <section class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <span>📋</span>
+          <span>Log & Diagnostics</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <button class="btn btn-secondary" id="btn-copy-log" style="font-size: 11px; padding: 4px 10px;" title="Copy all logs to clipboard">
+            <span>📋</span>
+            <span id="copy-log-text">Copy Log</span>
+          </button>
+          <button class="btn btn-slate" id="btn-copy-bug" style="font-size: 11px; padding: 4px 10px; border-color: #f59e0b; color: #f59e0b;" title="Copy complete formatted bug report with logs to paste in chat">
+            <span>🐞</span>
+            <span id="copy-bug-text">Copy Bug Report</span>
+          </button>
+          <button class="btn btn-danger" id="btn-clear-log" style="font-size: 11px; padding: 4px 8px;" title="Clear log window">
+            <span>✕</span>
+          </button>
+        </div>
+      </div>
+      <div class="log-box" id="log-container">
+        <!-- Log lines dynamically injected here -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Sticky Bottom Action Bar -->
+  <footer class="bottom-bar">
+    <div class="progress-container">
+      <div class="progress-bar-fill" id="progress-fill"></div>
+    </div>
+    <div class="bottom-content-row">
+      <div class="status-label">
+        <span id="status-indicator">●</span>
+        <span id="status-text">Ready</span>
+      </div>
+      <button class="btn btn-green-solid btn-split-export" id="btn-split-export">
+        <span>✂</span>
+        <span>Split & Export</span>
+      </button>
+    </div>
+  </footer>
+
+  <!-- Modal: Bulk Paste Tracklist -->
+  <div class="modal-overlay" id="bulk-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title">📝 Bulk Paste Tracklist / Timestamps</div>
+        <button class="btn-row-del" id="modal-close-btn">✕</button>
+      </div>
+      <div class="modal-subtitle">
+        Paste your songs / segments text below. Supported formats:<br>
+        • Opening Prayer and Worship: (0:00:00 - 0:02:29)<br>
+        • "Hold My Hand" Worship Section: (0:02:47 - 0:04:39)<br>
+        • Title: 0:00:00 - 0:02:29<br>
+        • Title | 0:00:00 | 0:02:29<br>
+        • 0:00:00 Intro, 02:30 Song 1 (Chapters)
+      </div>
+      <textarea
+        id="modal-textarea"
+        class="modal-textarea"
+        placeholder="Paste your tracklist lines or markdown table here..."
+      ></textarea>
+      <div class="modal-footer">
+        <button class="btn btn-green-solid" id="modal-load-btn" style="padding: 8px 20px;">
+          <span>✔</span>
+          <span>Load into Table</span>
+        </button>
+        <button class="btn btn-secondary" id="modal-cancel-btn">
+          <span>Cancel</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="lib/jszip.min.js"></script>
+  <script src="lib/lame.min.js"></script>
+  <script src="lib/wav-encoder.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
