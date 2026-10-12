@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Mureka Audio Splitter",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Download, split, and export full-length YouTube audio segments with automatic cookie bypass, bot-check protection, and precision audio slicing.",
   "icons": {
     "16": "icons/icon16.png",
@@ -15,7 +15,8 @@
     "downloads",
     "activeTab",
     "tabs",
-    "scripting"
+    "scripting",
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -23,9 +24,12 @@
   "background": {
     "service_worker": "background.js"
   },
+  "side_panel": {
+    "default_path": "popup.html"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Mureka Audio Splitter",
+    "default_title": "Mureka Audio Splitter (Click for Studio)",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

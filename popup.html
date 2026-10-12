@@ -23,12 +23,29 @@
         <span>⚡</span>
         <span id="ota-btn-label">Update OTA</span>
       </button>
-      <button class="btn-icon-link" id="btn-open-tab" title="Open Fullscreen Studio in Browser Tab">
+      <button class="btn-icon-link" id="btn-open-window" title="Open as Standalone Persistent OS Window (Never closes when clicking outside)">
         <span>⛶</span>
-        <span>Studio Tab</span>
+        <span>Window</span>
+      </button>
+      <button class="btn-icon-link" id="btn-open-sidepanel" title="Dock in Chrome Side Panel beside YouTube">
+        <span>📌</span>
+        <span>Side Panel</span>
+      </button>
+      <button class="btn-icon-link" id="btn-open-tab" title="Open Fullscreen Studio in Browser Tab">
+        <span>↗</span>
+        <span>Tab</span>
       </button>
     </div>
   </header>
+
+  <!-- Persistent Window Notice Banner (Only shown in ephemeral popup mode) -->
+  <div class="popup-persistent-banner" id="popup-persistent-banner">
+    <div class="banner-text">
+      <span class="banner-icon">💡</span>
+      <span><b>Background Tip:</b> Clicking outside closes this popup. Open <b>⛶ Window</b> or <b>📌 Side Panel</b> to keep running uninterrupted in background!</span>
+    </div>
+    <button class="btn-banner-action" id="btn-banner-open-window">⛶ Open Window</button>
+  </div>
 
   <!-- Main Scroll Container -->
   <main class="main-container">
@@ -229,6 +246,7 @@
       <div class="status-label">
         <span id="status-indicator">●</span>
         <span id="status-text">Ready</span>
+        <span class="autosave-badge" id="autosave-badge">💾 Auto-saved</span>
       </div>
       <button class="btn btn-green-solid btn-split-export" id="btn-split-export">
         <span>✂</span>

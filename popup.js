@@ -1,6 +1,13 @@
 /**
- * Mureka Audio Splitter - Core Frontend Controller
+ * Mureka Audio Splitter - Core Frontend Controller (v1.0.2)
  * Precision audio slicer with automatic YouTube cookie bypass & bot-check protection.
+ * Features:
+ * - Real-time state auto-save & auto-restore (never lose work on popup close)
+ * - Persistent Standalone OS Window mode & Chrome Side Panel mode
+ * - Robust Web Audio API decoding (MP3, M4A, Opus, WebM, WAV)
+ * - Local Companion Bridge integration with optional FFmpeg & last-download recovery
+ * - Universal Tracklist parser & Bulk Paste modal
+ * - GitHub Over-The-Air (OTA) updater
  */
 
 // ─── Global State ─────────────────────────────────────────────────────────────
@@ -10,12 +17,17 @@ const state = {
   audioFileName: null,
   audioDuration: 0,
   audioSourceType: null,
+  bridgeFilePath: null,
   isBusy: false,
   segments: [], // [{ id, name, start, end, status }]
   cookiesActive: false,
   cookiesText: '',
   localBridgeActive: false,
+  saveTimeout: null,
 };
+
+const CURRENT_VERSION = '1.0.2';
+const GITHUB_REPO_RAW = 'https://raw.githubusercontent.com/ravibadra9/mureka-audio-splitter/main';
 
 // ─── Utility Helpers ──────────────────────────────────────────────────────────
 function formatTime(seconds) {
@@ -56,23 +68,38 @@ function getTimestamp() {
   return now.toTimeString().split(' ')[0];
 }
 
-// ─── Logging System ───────────────────────────────────────────────────────────
-function log(message, colorClass = '') {
-  const container = document.getElementById('log-container');
-  if (!container) return;
-
-  const entry = document.createElement('div');
-  entry.className = `log-entry ${colorClass}`;
-  entry.innerHTML = `<span class="log-time">[${getTimestamp()}]</span> ${escapeHtml(message)}`;
-  container.appendChild(entry);
-  container.scrollTop = container.scrollHeight;
-}
-
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+// ─── Logging System with Storage Persistence ──────────────────────────────────
+function log(message, colorClass = '') {
+  const container = document.getElementById('log-container');
+  if (!container) return;
+
+  const timeStr = getTimestamp();
+  const entry = document.createElement('div');
+  entry.className = `log-entry ${colorClass}`;
+  entry.innerHTML = `<span class="log-time">[${timeStr}]</span> ${escapeHtml(message)}`;
+  container.appendChild(entry);
+  container.scrollTop = container.scrollHeight;
+
+  // Persist recent logs
+  saveRecentLogsDebounced();
+}
+
+function saveRecentLogsDebounced() {
+  const container = document.getElementById('log-container');
+  if (!container) return;
+  const entries = Array.from(container.querySelectorAll('.log-entry')).slice(-40);
+  const logData = entries.map(el => ({
+    html: el.innerHTML,
+    className: el.className
+  }));
+  chrome.storage.local.set({ mureka_saved_logs: logData }).catch(() => {});
 }
 
 // ─── Progress & Status ────────────────────────────────────────────────────────
@@ -101,11 +128,10 @@ function setProgress(percent = null, indeterminate = false) {
 
 function setBusy(busy, message = '') {
   state.isBusy = busy;
+  const btn = document.getElementById('btn-split-export');
   const dlBtn = document.getElementById('btn-download-audio');
-  const splitBtn = document.getElementById('btn-split-export');
-
+  if (btn) btn.disabled = busy;
   if (dlBtn) dlBtn.disabled = busy;
-  if (splitBtn) splitBtn.disabled = busy;
 
   if (busy) {
     setProgress(null, true);
@@ -116,16 +142,189 @@ function setBusy(busy, message = '') {
   }
 }
 
-// ─── Audio Context ────────────────────────────────────────────────────────────
+// ─── Safe Audio Context (No unhandled exceptions) ─────────────────────────────
 function getAudioContext() {
-  if (!state.audioContext) {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    state.audioContext = new AudioCtx();
-  }
-  if (state.audioContext.state === 'suspended') {
-    state.audioContext.resume();
+  try {
+    if (!state.audioContext || state.audioContext.state === 'closed') {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      state.audioContext = new AudioCtx();
+    }
+    if (state.audioContext.state === 'suspended') {
+      state.audioContext.resume().catch(() => {});
+    }
+  } catch (err) {
+    console.warn('AudioContext creation notice:', err);
   }
   return state.audioContext;
+}
+
+// ─── State Auto-Save & Auto-Restore System ─────────────────────────────────────
+function triggerAutoSave() {
+  if (state.saveTimeout) clearTimeout(state.saveTimeout);
+  state.saveTimeout = setTimeout(() => {
+    saveFullStateToStorage();
+  }, 250);
+}
+
+async function saveFullStateToStorage() {
+  try {
+    const urlVal = document.getElementById('yt-url-input')?.value || '';
+    const format = document.getElementById('export-format-select')?.value || 'mp3';
+    const mode = document.getElementById('export-mode-select')?.value || 'zip';
+    const folder = document.getElementById('output-folder-input')?.value || 'AudioSegments';
+
+    const payload = {
+      mureka_saved_url: urlVal,
+      mureka_saved_segments: state.segments,
+      mureka_saved_options: { format, mode, folder },
+      mureka_saved_audio_meta: state.audioFileName ? {
+        title: state.audioFileName,
+        duration: state.audioDuration,
+        filepath: state.bridgeFilePath,
+        sourceType: state.audioSourceType
+      } : null,
+      mureka_saved_timestamp: Date.now()
+    };
+
+    await chrome.storage.local.set(payload);
+
+    // Visual feedback badge
+    const badge = document.getElementById('autosave-badge');
+    if (badge) {
+      badge.style.opacity = '1';
+      setTimeout(() => { badge.style.opacity = '0.7'; }, 1000);
+    }
+  } catch (err) {
+    console.warn('Auto-save error:', err);
+  }
+}
+
+async function restoreStateFromStorage() {
+  try {
+    const data = await chrome.storage.local.get([
+      'mureka_saved_url',
+      'mureka_saved_segments',
+      'mureka_saved_options',
+      'mureka_saved_audio_meta',
+      'mureka_saved_logs'
+    ]);
+
+    // 1. Restore URL
+    if (data.mureka_saved_url) {
+      const input = document.getElementById('yt-url-input');
+      if (input && !input.value) {
+        input.value = data.mureka_saved_url;
+      }
+    }
+
+    // 2. Restore Segments
+    if (Array.isArray(data.mureka_saved_segments) && data.mureka_saved_segments.length > 0) {
+      state.segments = data.mureka_saved_segments;
+      renderSegmentsTable();
+    } else {
+      // Default 3 blank rows
+      state.segments = [
+        { id: 'seg_1', name: '', start: '', end: '', status: 'idle' },
+        { id: 'seg_2', name: '', start: '', end: '', status: 'idle' },
+        { id: 'seg_3', name: '', start: '', end: '', status: 'idle' },
+      ];
+      renderSegmentsTable();
+    }
+
+    // 3. Restore Options
+    if (data.mureka_saved_options) {
+      const { format, mode, folder } = data.mureka_saved_options;
+      const fmtEl = document.getElementById('export-format-select');
+      const modeEl = document.getElementById('export-mode-select');
+      const folderEl = document.getElementById('output-folder-input');
+      if (fmtEl && format) fmtEl.value = format;
+      if (modeEl && mode) modeEl.value = mode;
+      if (folderEl && folder) folderEl.value = folder;
+    }
+
+    // 4. Restore Logs
+    if (Array.isArray(data.mureka_saved_logs) && data.mureka_saved_logs.length > 0) {
+      const container = document.getElementById('log-container');
+      if (container && container.children.length <= 2) {
+        data.mureka_saved_logs.forEach(item => {
+          const entry = document.createElement('div');
+          entry.className = item.className || 'log-entry';
+          entry.innerHTML = item.html;
+          container.appendChild(entry);
+        });
+        container.scrollTop = container.scrollHeight;
+      }
+    }
+
+    // 5. Restore Audio Session or Reconnect to Bridge
+    if (data.mureka_saved_audio_meta) {
+      const meta = data.mureka_saved_audio_meta;
+      state.audioFileName = meta.title;
+      state.audioDuration = meta.duration;
+      state.audioSourceType = meta.sourceType;
+      state.bridgeFilePath = meta.filepath;
+
+      const lbl = document.getElementById('file-status-lbl');
+      if (lbl) {
+        lbl.className = 'file-status-label loaded';
+        lbl.textContent = `${meta.title.slice(0, 40)} (${formatTime(meta.duration)})`;
+      }
+      setStatus(`Loaded: ${meta.title.slice(0, 35)} (${formatTime(meta.duration)}) — ready to split`);
+    }
+
+    // 6. Check if companion bridge has an active/finished download from before
+    checkBridgeLastDownload();
+
+  } catch (err) {
+    console.error('State restore error:', err);
+  }
+}
+
+async function checkBridgeLastDownload() {
+  try {
+    const res = await fetch('http://127.0.0.1:59955/last_download');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && data.available && (!state.audioBuffer || state.audioFileName !== data.title)) {
+      log(`⚡ Bridge recovered last downloaded audio: "${data.title}" (${data.duration_str})`, 'log-cyan');
+      // Prompt user or auto-load
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-secondary';
+      btn.style.cssText = 'font-size: 11px; padding: 2px 8px; margin-left: 8px;';
+      btn.textContent = '⚡ Reload Audio Bytes';
+      btn.onclick = () => reloadBridgeAudio(data.filepath, data.title, data.duration);
+
+      const statusEl = document.getElementById('status-text');
+      if (statusEl && !state.audioBuffer) {
+        statusEl.textContent = `Ready: "${data.title}" (${data.duration_str}) available from bridge`;
+        statusEl.appendChild(btn);
+      }
+    }
+  } catch (_) {}
+}
+
+async function reloadBridgeAudio(filepath, title, duration) {
+  setBusy(true, 'Loading audio bytes from local bridge…');
+  log(`⬇ Fetching audio bytes for: ${title}…`, 'log-cyan');
+  try {
+    const fileRes = await fetch(`http://127.0.0.1:59955/file?path=${encodeURIComponent(filepath)}`);
+    const buffer = await fileRes.arrayBuffer();
+    const decoded = await getAudioContext().decodeAudioData(buffer);
+
+    state.audioBuffer = decoded;
+    state.audioFileName = sanitizeFilename(title);
+    state.audioDuration = decoded.duration || duration;
+    state.audioSourceType = 'youtube';
+    state.bridgeFilePath = filepath;
+
+    updateLoadedAudioUI(title, buffer.byteLength, decoded.duration);
+    log(`✔ Successfully re-loaded audio bytes from bridge: ${title}!`, 'log-green');
+    triggerAutoSave();
+  } catch (err) {
+    log(`⚠️ Could not reload audio: ${err.message}`, 'log-red');
+  } finally {
+    setBusy(false);
+  }
 }
 
 // ─── Tracklist Universal Parser ───────────────────────────────────────────────
@@ -249,15 +448,15 @@ function renderSegmentsTable() {
       <button class="btn-row-del" title="Remove segment">✕</button>
     `;
 
-    // Event listeners
+    // Event listeners with auto-save
     const nameInput = rowEl.querySelector('.seg-name');
     const startInput = rowEl.querySelector('.seg-start');
     const endInput = rowEl.querySelector('.seg-end');
     const delBtn = rowEl.querySelector('.btn-row-del');
 
-    nameInput.addEventListener('input', (e) => { seg.name = e.target.value; });
-    startInput.addEventListener('input', (e) => { seg.start = e.target.value; });
-    endInput.addEventListener('input', (e) => { seg.end = e.target.value; });
+    nameInput.addEventListener('input', (e) => { seg.name = e.target.value; triggerAutoSave(); });
+    startInput.addEventListener('input', (e) => { seg.start = e.target.value; triggerAutoSave(); });
+    endInput.addEventListener('input', (e) => { seg.end = e.target.value; triggerAutoSave(); });
 
     delBtn.addEventListener('click', () => {
       deleteSegmentRow(seg.id);
@@ -277,12 +476,14 @@ function addSegmentRow(name = '', start = '', end = '') {
   };
   state.segments.push(newSeg);
   renderSegmentsTable();
+  triggerAutoSave();
 }
 
 function deleteSegmentRow(id) {
   if (state.segments.length <= 1) return;
   state.segments = state.segments.filter(s => s.id !== id);
   renderSegmentsTable();
+  triggerAutoSave();
 }
 
 function loadSegmentsIntoTable(parsedList) {
@@ -295,7 +496,8 @@ function loadSegmentsIntoTable(parsedList) {
     status: 'idle'
   }));
   renderSegmentsTable();
-  log(`✔ Loaded ${parsedList.length} segment(s) into table`, 'log-green');
+  triggerAutoSave();
+  log(`✔ Loaded ${parsedList.length} segment(s) into table (Auto-saved)`, 'log-green');
 }
 
 // ─── Cookie & Token Management ────────────────────────────────────────────────
@@ -449,6 +651,7 @@ async function handleLocalAudioFile(file) {
     state.audioFileName = file.name.replace(/\.[^/.]+$/, '');
     state.audioDuration = decoded.duration;
     state.audioSourceType = 'local';
+    state.bridgeFilePath = null;
 
     const lbl = document.getElementById('file-status-lbl');
     if (lbl) {
@@ -458,6 +661,7 @@ async function handleLocalAudioFile(file) {
 
     log(`✔ Successfully loaded audio: ${file.name} | Duration: ${formatTime(decoded.duration)} | SampleRate: ${decoded.sampleRate}Hz`, 'log-green');
     setStatus(`Loaded: ${file.name} (${formatTime(decoded.duration)}) — ready to split`);
+    triggerAutoSave();
   } catch (err) {
     console.error('Audio decode error:', err);
     log(`✖ Failed to decode audio file: ${err.message}`, 'log-red');
@@ -468,9 +672,6 @@ async function handleLocalAudioFile(file) {
 }
 
 // ─── Version & OTA Updater ───────────────────────────────────────────────────
-const CURRENT_VERSION = '1.0.1';
-const GITHUB_REPO_RAW = 'https://raw.githubusercontent.com/ravibadra9/mureka-audio-splitter/main';
-
 async function checkRemoteOtaVersion() {
   try {
     const res = await fetch(`${GITHUB_REPO_RAW}/version.json?t=${Date.now()}`);
@@ -554,17 +755,18 @@ async function checkLocalBridge() {
   try {
     const res = await fetch('http://127.0.0.1:59955/status', { method: 'GET' });
     if (res.ok) {
+      const data = await res.json();
       state.localBridgeActive = true;
-      updateEngineUI(true);
+      updateEngineUI(true, data.ffmpeg_available);
       return true;
     }
   } catch (_) {}
   state.localBridgeActive = false;
-  updateEngineUI(false);
+  updateEngineUI(false, false);
   return false;
 }
 
-function updateEngineUI(online) {
+function updateEngineUI(online, ffmpegAvailable = false) {
   const dot = document.getElementById('engine-dot');
   const title = document.getElementById('engine-title');
   const sub = document.getElementById('engine-sub');
@@ -572,9 +774,14 @@ function updateEngineUI(online) {
 
   if (online) {
     dot.className = 'engine-dot online';
-    title.textContent = 'Local Engine: Active ⚡ (yt-dlp 320k Bypass)';
+    if (ffmpegAvailable) {
+      title.textContent = 'Local Engine: Active ⚡ (yt-dlp + FFmpeg 320k MP3)';
+      sub.textContent = 'Hardware accelerated downloads active';
+    } else {
+      title.textContent = 'Local Engine: Active ⚡ (yt-dlp Native Audio Stream Mode)';
+      sub.textContent = 'FFmpeg not needed — downloading native M4A/Opus with Web Audio decoding';
+    }
     title.style.color = 'var(--accent-green)';
-    sub.textContent = 'Hardware accelerated downloads active';
   } else {
     dot.className = 'engine-dot';
     title.textContent = 'Local Engine: Offline (Browser Standalone Mode)';
@@ -614,6 +821,7 @@ function copyBugReport() {
   const report = [
     '================== 🐞 MUREKA BUG REPORT ==================',
     `Timestamp: ${new Date().toLocaleString()}`,
+    `Version: v${CURRENT_VERSION}`,
     `YouTube URL: ${urlVal}`,
     `Cookie Status: ${cookieStatus}`,
     `Local Engine: ${bridgeStatus}`,
@@ -640,6 +848,7 @@ function copyBugReport() {
 function clearLog() {
   const container = document.getElementById('log-container');
   if (container) container.innerHTML = '';
+  chrome.storage.local.remove('mureka_saved_logs').catch(() => {});
   log('⚡ Log cleared.', 'log-cyan');
 }
 
@@ -652,6 +861,7 @@ function checkActiveTabForYouTube() {
       const input = document.getElementById('yt-url-input');
       if (input && !input.value) {
         input.value = url;
+        triggerAutoSave();
         log(`📌 Auto-detected YouTube video from active tab: ${tabs[0].title.slice(0, 50)}…`, 'log-cyan');
       }
     }
@@ -675,8 +885,8 @@ async function startYouTubeDownload() {
     const bridgeAvailable = await checkLocalBridge();
 
     if (bridgeAvailable) {
-      log('⚡ Local Companion Bridge active! Downloading with yt-dlp + FFmpeg…', 'log-green');
-      setStatus('Downloading with local companion bridge…', true);
+      log('⚡ Local Companion Bridge active! Downloading with yt-dlp…', 'log-green');
+      setStatus('Downloading audio stream via local companion bridge…', true);
 
       const bridgeRes = await fetch('http://127.0.0.1:59955/download', {
         method: 'POST',
@@ -687,7 +897,7 @@ async function startYouTubeDownload() {
       if (!data.success) throw new Error(data.error || 'Bridge download failed');
 
       log(`✔ Companion download complete: ${data.title} (${data.duration_str})`, 'log-green');
-      setStatus('Decoding audio bytes…', true);
+      setStatus('Decoding audio bytes with Web Audio API…', true);
 
       // Fetch the downloaded file bytes from the bridge
       const fileRes = await fetch(`http://127.0.0.1:59955/file?path=${encodeURIComponent(data.filepath)}`);
@@ -698,9 +908,11 @@ async function startYouTubeDownload() {
       state.audioFileName = sanitizeFilename(data.title);
       state.audioDuration = decoded.duration;
       state.audioSourceType = 'youtube';
+      state.bridgeFilePath = data.filepath;
 
       updateLoadedAudioUI(data.title, buffer.byteLength, decoded.duration);
       log(`✔ Audio successfully loaded: ${data.title} (${formatTime(decoded.duration)}) — ready to split!`, 'log-green');
+      triggerAutoSave();
       return;
     }
 
@@ -775,9 +987,11 @@ async function startYouTubeDownload() {
     state.audioFileName = sanitizeFilename(resolved.title);
     state.audioDuration = decoded.duration;
     state.audioSourceType = 'youtube';
+    state.bridgeFilePath = null;
 
     updateLoadedAudioUI(resolved.title, audioArrayBuffer.byteLength, decoded.duration);
     log(`✔ Complete Download & Decode: ${resolved.title} (${formatTime(decoded.duration)}) — ready to split!`, 'log-green');
+    triggerAutoSave();
 
   } catch (err) {
     console.error('YouTube download error:', err);
@@ -941,6 +1155,7 @@ async function startSplitAndExport() {
   setStatus(summary, false);
   log(`🎉 ${summary}`, 'log-green');
   setBusy(false);
+  triggerAutoSave();
 }
 
 // ─── Format Prompt Helper ─────────────────────────────────────────────────────
@@ -970,7 +1185,6 @@ function openBulkModal() {
   const textarea = document.getElementById('modal-textarea');
   if (modal) modal.classList.add('open');
 
-  // Pre-fill from clipboard if it contains timestamps
   navigator.clipboard.readText().then(text => {
     if (textarea && !textarea.value && /[:\-]/.test(text)) {
       textarea.value = text.trim();
@@ -1023,26 +1237,51 @@ async function pasteAndAutoParse() {
 document.addEventListener('DOMContentLoaded', () => {
   // Check full studio mode
   const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.get('mode') === 'full') {
+  const isFull = urlParams.get('mode') === 'full';
+  if (isFull) {
     document.body.classList.add('full-studio-mode');
   }
 
-  // Initialize 3 default empty rows
-  for (let i = 0; i < 3; i++) {
-    addSegmentRow('', '', '');
-  }
+  // Restore saved state (URL, segments, options, logs, audio)
+  restoreStateFromStorage();
 
   // Load saved cookies
   loadSavedCookies();
 
-  // Check active tab
+  // Check active tab for YouTube URL if input is empty
   checkActiveTabForYouTube();
 
   // Log greeting
-  log('⚡ Mureka Audio Splitter initialized.', 'log-cyan');
+  log(`⚡ Mureka Audio Splitter v${CURRENT_VERSION} initialized.`, 'log-cyan');
   log('🛡 Ready with YouTube bot-check and 403 bypass protection.', 'log-green');
 
-  // Event Listeners
+  // Input change auto-save listeners
+  document.getElementById('yt-url-input')?.addEventListener('input', triggerAutoSave);
+  document.getElementById('export-format-select')?.addEventListener('change', triggerAutoSave);
+  document.getElementById('export-mode-select')?.addEventListener('change', triggerAutoSave);
+  document.getElementById('output-folder-input')?.addEventListener('input', triggerAutoSave);
+
+  // Persistent Window & Side Panel Actions
+  const openWindow = () => {
+    chrome.runtime.sendMessage({ action: 'OPEN_WINDOW' }, () => {
+      // Close popup if opened in popup
+      if (!isFull) window.close();
+    });
+  };
+
+  document.getElementById('btn-open-window')?.addEventListener('click', openWindow);
+  document.getElementById('btn-banner-open-window')?.addEventListener('click', openWindow);
+
+  document.getElementById('btn-open-sidepanel')?.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'OPEN_SIDEPANEL' }, (res) => {
+      if (res && res.success) {
+        log('📌 Opened Mureka Splitter in Chrome Side Panel (statically pinned)!', 'log-green');
+      } else {
+        log(`ℹ Side Panel note: Click Chrome side panel toolbar icon or use ⛶ Window.`, 'log-cyan');
+      }
+    });
+  });
+
   document.getElementById('btn-open-tab')?.addEventListener('click', () => {
     chrome.runtime.sendMessage({ action: 'OPEN_STUDIO' });
   });

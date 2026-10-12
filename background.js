@@ -1,6 +1,6 @@
 /**
  * Mureka Audio Splitter - Background Service Worker (Manifest V3)
- * Handles cookie extraction, audio stream routing, and download management.
+ * Handles cookie extraction, audio stream routing, persistent window management, and side panels.
  */
 
 // Format cookies into Netscape HTTP Cookie File format
@@ -64,16 +64,57 @@ async function getYouTubeCookies() {
   }
 }
 
+// Open Dedicated Floating Window (Persistent OS Window - Never auto-closes on blur!)
+async function openDedicatedWindow() {
+  const url = chrome.runtime.getURL('popup.html?mode=full');
+  const current = await chrome.windows.getCurrent().catch(() => null);
+  const left = current ? Math.max(50, current.left + 50) : 100;
+  const top = current ? Math.max(50, current.top + 50) : 100;
+
+  return chrome.windows.create({
+    url: url,
+    type: 'popup',
+    width: 980,
+    height: 820,
+    left: left,
+    top: top,
+    focused: true
+  });
+}
+
 // Message Listener
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'GET_YT_COOKIES') {
     getYouTubeCookies().then(sendResponse);
-    return true; // Keep message channel open for async response
+    return true;
   }
 
   if (request.action === 'OPEN_STUDIO') {
     chrome.tabs.create({ url: chrome.runtime.getURL('popup.html?mode=full') });
     sendResponse({ success: true });
+    return true;
+  }
+
+  if (request.action === 'OPEN_WINDOW') {
+    openDedicatedWindow().then(win => sendResponse({ success: true, windowId: win.id }));
+    return true;
+  }
+
+  if (request.action === 'OPEN_SIDEPANEL') {
+    if (chrome.sidePanel && chrome.sidePanel.open) {
+      const windowId = sender.tab ? sender.tab.windowId : undefined;
+      if (windowId) {
+        chrome.sidePanel.open({ windowId }).then(() => sendResponse({ success: true })).catch(err => sendResponse({ success: false, error: err.message }));
+      } else {
+        chrome.windows.getCurrent().then(win => {
+          chrome.sidePanel.open({ windowId: win.id })
+            .then(() => sendResponse({ success: true }))
+            .catch(err => sendResponse({ success: false, error: err.message }));
+        });
+      }
+    } else {
+      sendResponse({ success: false, error: 'Side panel API not supported on this Chrome build' });
+    }
     return true;
   }
 
@@ -106,6 +147,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // Setup on extension install / update
 chrome.runtime.onInstalled.addListener(() => {
   console.log('Mureka Audio Splitter Extension installed successfully.');
-  // Initialize default cookies sync
   getYouTubeCookies().catch(() => {});
 });
